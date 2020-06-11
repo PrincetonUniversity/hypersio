@@ -1,0 +1,26 @@
+#!/bin/bash
+
+###############################################################################
+# Manual step - must be ran from a console
+###############################################################################
+# git clone git@github.com:PrincetonUniversity/hypersio.git
+
+echo "#######################################"
+echo "Configuring Boot to serial"
+echo "#######################################"
+cd /home/hypersio/hypersio/src/scripts
+sudo cp grub_serial /etc/default/grub
+sudo grub-mkconfig -o /boot/grub/grub.cfg
+
+echo "########################################"
+echo "Configuring SSH"
+echo "########################################"
+echo "> Key for hypersio:"
+ssh-keygen
+echo "> Password for root:"
+sudo passwd root
+echo "> Key for root:"
+sudo su -c "ssh-keygen"
+sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/g' /etc/ssh/sshd_config
+
+sudo poweroff

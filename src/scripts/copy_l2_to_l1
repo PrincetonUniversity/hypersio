@@ -1,0 +1,10 @@
+#!/bin/bash
+
+source vmconfig
+
+sudo dhclient -v
+sudo mkdir -p /mnt/host
+sudo mount -t cifs //10.0.2.4/qemu /mnt/host -o username=alavrov
+echo "Copying L2 VM image to $VM_STORAGE_PATH"
+sudo cp /mnt/host/$L2_BASEIMG $VM_STORAGE_PATH
+echo "DONE"

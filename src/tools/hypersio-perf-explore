@@ -1,0 +1,68 @@
+#!/usr/bin/env python
+
+from libconfig import *
+from argparse import ArgumentParser
+import subprocess, shlex, os, sys
+import dbglib as dbg
+import config as cfg
+import sioperf_config as siocfg
+import sioperflib as sioperf
+
+def main():
+    parser = ArgumentParser()
+    parser = sioperf.addSIOPerfOptionsToParser(parser)
+    parser.add_argument("--logdir", dest="logdir", type=str, default=cfg.SIOPERF_RUN_LOG_DIR, help="Path for sioperf logs")
+
+    args = parser.parse_args()
+
+
+    workload_cfg = sioperf.constructWorkloadConfigFromArgs(args)
+    hw_cfg = sioperf.constructHWConfigFromArgs(args)
+    
+    cfg_l = siocfg.GenIOTLBConfigList(hw_cfg)
+
+    simcfg_l = siocfg.makeConfigListForWorkload(cfg_l, workload_cfg)
+
+
+    sim_cnt = 0
+    pid_l = list()
+    flog_l = list()
+    for scfg in simcfg_l:
+        if args.logdir:
+            scfg.setLogDir(args.logdir)
+        log_path = scfg.GetLogPath()
+        if os.path.exists(log_path):
+            dbg.print_warning("Log %s exists! Skipping..." % log_path)
+            continue
+        # Write Configuration
+        scfg.WriteConfig()
+        # Open log file
+        flog_path = scfg.GetLogPath()
+        flog = open(flog_path, 'w')
+        flog_l.append(flog)
+        # launch each simulation as an independent process
+        sioperf_path = os.path.join(cfg.SIOPERF_DIR, cfg.SIOPERF_EXEC_NAME)
+        salloc_opt = "--salloc" if scfg.salloc else ""
+        inorder_opt = "--inorder" if not scfg.tq_ooo else ""
+        cmd = "%s --run --config %s --prefix %s --tqueue %d %s %s \
+                --tenants %d --iotlbrepl %s --linkbwgbps %d" % \
+                (sioperf_path, scfg.GetConfigPath(), scfg.GetTracePrefix(),
+                 scfg.tq_size, inorder_opt, salloc_opt, scfg.tnt_num,
+                 scfg.iotlbrepl, scfg.link_gbps)
+        flog.write(cmd)
+        flog.write("\n")
+        flog.flush()
+        dbg.print_info("Running simulation for config: %s. Saving log to %s" % (scfg.GetUniqueName(), flog_path))
+        pid = subprocess.Popen(shlex.split(cmd), stderr=flog, stdout=flog)
+        pid_l.append(pid)
+        sim_cnt += 1
+
+    dbg.print_info("Waiting for %d simulations to finish" % sim_cnt)
+    for p in pid_l:
+        p.wait()
+    for f in flog_l:
+        f.flush()
+        f.close()
+
+if __name__ == '__main__':
+    main()

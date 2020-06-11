@@ -1,0 +1,15 @@
+#!/bin/bash
+
+source vmconfig
+
+cmd="ssh -o StrictHostKeyChecking=no -p $1 $DEFAULT_USERNAME@localhost hostname"
+echo $cmd
+ssh -o StrictHostKeyChecking=no -p $1 $DEFAULT_USERNAME@localhost hostname
+rv=$?
+while [ $rv -ne 0 ]; do 
+  echo "Failed with code $rv"
+  sleep 1
+  ssh -o StrictHostKeyChecking=no -p $1 $DEFAULT_USERNAME@localhost hostname
+  echo $cmd
+  rv=$?
+done

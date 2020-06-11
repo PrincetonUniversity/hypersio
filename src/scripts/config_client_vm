@@ -1,0 +1,33 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" == "" ]; then
+    echo "Client ID is required!"
+else
+    vmid=$1
+    vmname="${CLIENT_VMPREFIX}_${vmid}"
+    vmimg="$vmname.img"
+    pnum=$[$CLIENT_FWDPORT_BASE+$vmid]
+    vmip="172.16.$vmid.21"
+
+    echo "Configuring $vmname"
+
+    ssh -o StrictHostKeyChecking=no root@localhost -p $pnum << ENDSSH
+        # 1 - Change host name
+        echo "$vmname" > /etc/hostname
+        echo "127.0.0.1     localhost" > /etc/hosts
+        echo "127.0.1.1     $vmname" >> /etc/hosts
+        # 2 - Configure a passthrough interface with a static IP
+        # Note: new netplan network manager on Ubuntu 18.04
+        echo "network:"         > /etc/netplan/01-netcfg.yaml
+        echo "  version: 2"     >> /etc/netplan/01-netcfg.yaml
+        echo "  ethernets:"     >> /etc/netplan/01-netcfg.yaml
+        echo "    ens4:"        >> /etc/netplan/01-netcfg.yaml
+        echo "      addresses: [$vmip/24]" >> /etc/netplan/01-netcfg.yaml
+        echo "    ens3:"        >> /etc/netplan/01-netcfg.yaml
+        echo "      dhcp4: yes" >> /etc/netplan/01-netcfg.yaml
+        netplan apply
+        poweroff
+ENDSSH
+fi

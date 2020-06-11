@@ -1,0 +1,63 @@
+#!/bin/bash
+
+###############################################################################
+# Manual step
+###############################################################################
+# git clone git@github.com:PrincetonUniversity/hypersio.git
+# cd ~/hypersio/src/scripts
+# ./config_l1_vm
+
+echo "########################################"
+echo "Installing Packages"
+echo "########################################"
+sudo apt-get update
+sudo apt-get install cifs-utils -y
+sudo apt-get install net-tools -y
+sudo apt-get install python-minimal -y
+sudo apt-get install qemu-kvm -y
+
+
+echo "#######################################"
+echo "Configuring Boot to serial"
+echo "#######################################"
+sudo cp grub_serial /etc/default/grub
+sudo grub-mkconfig -o /boot/grub/grub.cfg
+
+echo "########################################"
+echo "Configuring PATH and .bashrc"
+echo "########################################"
+# Auto start ssh_client
+echo "source /home/hypersio/hypersio/src/scripts/ssh_agent_start" >> ~/.bashrc
+sudo su -c "echo \"source /home/hypersio/hypersio/src/scripts/ssh_agent_start\" >> /root/.bashrc"
+
+# Add scripts folders to PATH
+echo "export HYPERSIO_HOME=/home/hypersio/hypersio" >> ~/.bashrc
+echo "export PATH=\$PATH:\$HYPERSIO_HOME/src/scripts:\$HYPERSIO_HOME/src/tools" >> ~/.bashrc
+
+sudo su -c "echo \"export HYPERSIO_HOME=/home/hypersio/hypersio\" >> /root/.bashrc"
+sudo su -c "echo \"export PATH=\\\$PATH:\\\$HYPERSIO_HOME/src/scripts:\\\$HYPERSIO_HOME/src/tools\" >> /root/.bashrc"
+
+sudo su -c "echo \"options vfio_iommu_type1 allow_unsafe_interrupts=1\" > /etc/modprobe.d/vfio.conf"
+
+echo "########################################"
+echo "Configuring SSH"
+echo "########################################"
+echo "> Key for hypersio:"
+ssh-keygen
+echo "> Password for root:"
+sudo passwd root
+echo "> Key for root:"
+sudo su -c "ssh-keygen"
+sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/g' /etc/ssh/sshd_config
+
+echo "########################################"
+echo "Configuring Netowrk Interface"
+echo "########################################"
+sudo su -c "echo \"network:\"         > /etc/netplan/01-netcfg.yaml"
+sudo su -c "echo \"  version: 2\"     >> /etc/netplan/01-netcfg.yaml"
+sudo su -c "echo \"  ethernets:\"     >> /etc/netplan/01-netcfg.yaml"
+sudo su -c "echo \"    enp0s28:\"     >> /etc/netplan/01-netcfg.yaml"
+sudo su -c "echo \"      dhcp4: yes\" >> /etc/netplan/01-netcfg.yaml"
+sudo netplan apply
+
+sudo poweroff

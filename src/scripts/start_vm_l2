@@ -1,0 +1,27 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" = "" ]; then
+	echo "ERROR: Provide VM id"
+else
+	if [ "$1" == "base" ]; then
+		vmimg=${L2_BASEIMG}
+		devnum=$FIRST_PCIEDEV
+		fwdport=$L2_FWDPORT_BASE
+	else
+		vmimg=${L2_VMPREFIX}_$1.img
+		devnum=$(($FIRST_PCIEDEV+$1))
+		fwdport=$(($L2_FWDPORT_BASE+$1))
+	fi
+ 
+	modprobe vfio-pci
+	devnum_hex=$( printf "%02x" "$devnum" )
+	bdf="0000:00:$devnum_hex.0"
+	echo "Using BDF $bdf"
+	echo "Unbinding PCI device"
+	echo $bdf > /sys/bus/pci/devices/$bdf/driver/unbind
+	echo "8086 100e" > /sys/bus/pci/drivers/vfio-pci/new_id
+	echo "Starting L2 VM $vmimg"
+	qemu-system-x86_64 -m 16G -drive file=$VM_STORAGE_PATH/$vmimg,format=raw --nographic -cpu host --enable-kvm -net user,hostfwd=tcp::$fwdport-:22 -net nic -device vfio-pci,host=$bdf,id=net0
+fi

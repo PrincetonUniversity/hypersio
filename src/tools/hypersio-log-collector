@@ -1,0 +1,371 @@
+#!/usr/bin/env python2.7
+
+from libconfig import *
+from argparse import ArgumentParser
+import os, sys, time, shutil, re
+import subprocess
+import execlib as ex
+import dbglib as dbg
+import dockerlib as dock
+import config as cfg
+import l1_config as l1cfg
+import vmlib as vm
+import common
+
+LOG_NAME = "hypersio_log_collector.log"
+SCRIPT_NAME = "cmd.bash"
+
+class RunTimeConfig:
+    def __init__(self):
+        self.iperf_bw = 0
+        self.iperf_dur = 30
+        self.iperf_mss = 9216
+        self.l1_vm_cpus = 4
+        # memory in GB
+        self.l1_vm_mem = 32
+        self.l1_vm_tap = 1
+        self.l2_vm_num = 1
+        self.run_id = 1
+        self.test_name = None
+        self.ms_conn_per_host = None
+        self.dryrun = False
+        self.runtest = False
+
+class DockerPair(object):
+    def __init__(self, test_name, conn_id):
+        self.test_name = test_name
+        self.nw_name = "overlay_%d" % conn_id
+        # Host configuration
+        ## Server
+        self.server_ip = "172.16.%d.20" % conn_id
+        self.server_host_cfg = dock.HostConfig(self.server_ip, "ens4", self.nw_name)
+        ## Client
+        self.client_fwd_port = cfg.CLIENT_FWDPORT_BASE + conn_id
+        self.client_host_name = "localhost -p %d" % self.client_fwd_port
+        self.client_host_cfg = dock.HostConfig(self.client_host_name, "ens4", self.nw_name)
+        # Docker Configuration
+        ## Server
+        self.server_container_name = "server_%d" % conn_id
+        self.server_cmd_script = "%s.sh" % self.server_host_cfg.host_name
+        self.server_flog_name = "%s_%s.log" % (self.test_name, self.server_container_name)
+        self.server_flog_path = os.path.join(cfg.LOG_DIR, self.server_flog_name)
+        ## Client
+        self.client_container_name = "client_%d" % conn_id
+        self.client_cmd_script = "%s.sh" % self.client_host_cfg.host_name
+        self.client_flog_name = "%s_%s.log" % (self.test_name, self.client_container_name)
+        self.client_flog_path = os.path.join(cfg.LOG_DIR, self.client_flog_name)
+        # Run Configuration
+        self.run_flog_name = "%s_%s_run.log" % (self.test_name, self.client_container_name)
+        self.run_flog_path = os.path.join(cfg.LOG_DIR, self.run_flog_name)
+        self.server_ip = None
+
+    def PrepareConnection(self):
+        (h1_cfg, h2_cfg) = (self.server_host_cfg, self.client_host_cfg)
+        
+        rv = dock.createSwarm(h1_cfg, h2_cfg)
+        if rv != 0:
+            dbg.print_error("Failed to create swarm out of '%s' and '%s'" % \
+                            (h1_cfg.host_name, h2_cfg.host_name))
+            return 1
+        nw_id = dock.createOverlayNetwork(h1_cfg)
+        if nw_id == None:
+            dbg.print_error("Failed to create an overlay network")
+            return 1
+
+        return 0
+
+    def PrepareServer(self):
+        # 1) Stop running containter
+        # 2) Remove containter with the same name
+        dbg.print_info("Cleaning up docker environment...")        
+        server_cleanup_cmd = "docker container stop %s; docker container rm %s;" % \
+                             (self.server_container_name, self.server_container_name)
+        flog = open(self.server_flog_path, 'w')
+        rv = ex.executeCmdBlockReturnCode(server_cleanup_cmd, flog, self.server_host_cfg.host_name, self.server_cmd_script)
+        if rv != 0:
+            dbg.print_error("Failed to prepare server: %s" % self.server_container_name)
+            dbg.print_error("Check %s" % self.server_flog_path)
+            # flog.close()
+            # return 1
+
+        # Start server and log to a file
+        dbg.print_info("Starting docker server...")
+        if self.test_name == "mediastream":
+            server_run_cmd = "docker run -d --name %s --volumes-from streaming_dataset --net %s \
+cloudsuite/media-streaming:server" % \
+                             (self.server_container_name, self.nw_name)
+        elif self.test_name == "websearch":
+            server_run_cmd = "docker run -i --name %s --net %s -p 8983:8983 \
+websearch_server_w_data 12g 1" % \
+                             (self.server_container_name, self.nw_name)
+        else:
+            dbg.print_error("Unknown test: '%s'" % self.test_name)
+            return 1
+
+        proc = ex.executeCmd(server_run_cmd, subprocess.PIPE, self.server_host_cfg.host_name, self.server_cmd_script)
+
+        if self.test_name == "websearch":
+            dbg.print_info("Waiting until Websearch Server IP is known")
+            while True:
+                output = proc.stdout.readline()
+                if output == '' and proc.poll() is not None:
+                    break
+                if output:
+                    flog.write(output)
+                    m = re.search(r"Index Node IP Address: (\d+\.\d+\.\d+\.\d+)", output)
+                    if m != None:
+                        dbg.print_info("Server IP: '%s'" % m.group(1))
+                        self.server_ip = m.group(1)
+                        break
+        flog.close()
+
+        return 0
+
+    def PrepareClient(self):
+        cleanup_cmd = "docker container rm %s" % self.client_container_name
+        flog = open(self.client_flog_path, 'w')
+        rv = ex.executeCmdBlockReturnCode(cleanup_cmd, flog, self.client_host_cfg.host_name, self.client_cmd_script)
+        flog.close()
+        if rv != 0:
+            dbg.print_error("Failed to prepare client: %s" % self.client_container_name)
+            dbg.print_error("Check %s" % self.client_flog_path)
+            return 1
+        return 0
+
+    def RunNonBlock(self, rc):
+        if self.test_name == "mediastream":
+            output_dir = os.path.join(cfg.LOG_DIR, self.server_container_name)
+            docker_cmd = "%s %d" % (self.server_container_name, rc.ms_conn_per_host)
+            cmd = "docker run -i --name %s -v %s:/output --volumes-from streaming_dataset \
+--net %s rtkarbon/cloudsuite:mediastreaming_client '%s'" % \
+                  (self.client_container_name, output_dir, self.nw_name, docker_cmd)
+        elif self.test_name == "websearch":
+            cmd = "docker run -i --name %s --net %s rtkarbon/cloudsuite:websearch_client \
+%s 50 90 60 %d" % \
+                  (self.client_container_name, self.nw_name, self.server_ip, rc.websearch_steady_s)
+        self.run_flog = open(self.run_flog_path, 'w')
+        self.run_proc = ex.executeCmd(cmd, self.run_flog, self.client_host_cfg.host_name, self.client_cmd_script)
+        return self.run_proc
+
+    def EndRun(self):
+        self.run_proc.wait()
+        self.run_flog.close()
+
+
+def runIperfTest(rc):
+    dbg.print_info("Running iperf test")
+    pid_l = list()
+    for l2id in range(rc.l2_vm_num):
+        # iperf_bw = rc.iperf_bw_l[l2id]
+        iperf_bw = rc.iperf_bw
+        ex.executeLocal("ifconfig tap0", sys.stderr)
+        cmd = "iperf_l2 %d %d %d %d" % (l2id, rc.iperf_dur, iperf_bw, rc.iperf_mss)
+        p = ex.executeCmd(cmd, sys.stderr, "localhost", SCRIPT_NAME)
+        pid_l.append(p)
+    # Wait for all connections to stop before shutt-ng L1 VM down
+    for p in pid_l:
+        p.wait()
+
+
+def runDockerTest(rc):
+    dbg.print_info("Running a test from docker")
+    docker_pair_l = list()
+    for l2_id in range(rc.l2_vm_num):
+        docker_pair_l.append(DockerPair(rc.test_name, l2_id))
+
+    # Prepare server and client before running workload in order to synchronize start time for clients
+    for dp in docker_pair_l:
+        dp.PrepareConnection()
+        dp.PrepareServer()
+        dp.PrepareClient()
+
+    wait_time = 30
+    dbg.print_info("Waiting %d s between docker setup and test" % wait_time)
+    time.sleep(wait_time)
+
+    # Start all clients
+    for dp in docker_pair_l:
+        dp.RunNonBlock(rc)
+    
+    # Wait for all clients to finish a test
+    for dp in docker_pair_l:    
+        dp.EndRun()
+
+    return 0
+
+def runTest(rc):
+    if rc.test_name == "iperf3":
+        runIperfTest(rc)
+    else:
+        runDockerTest(rc)
+
+def createBridges(rc, flog):
+    brnum = rc.l2_vm_num
+    dbg.print_info("Creating %d bridges" % brnum)
+    for i in range(brnum):
+        brname = "test_br%d" % i
+        l2vmif = "tap%d" % i
+        
+        cmd = "brctl addbr %s" % brname
+        ex.executeLocalBlock(cmd, flog)
+        
+        cmd = "brctl addif %s %s" % (brname, l2vmif)
+        ex.executeLocalBlock(cmd, flog)
+
+        clientifid = rc.l1_vm_tap + i
+        clientif = "tap%d" % clientifid
+        cmd = "brctl addif %s %s" % (brname, clientif)
+        ex.executeLocalBlock(cmd, flog)
+
+        cmd = "ifconfig %s 0.0.0.0" % l2vmif
+        ex.executeLocalBlock(cmd, flog)
+        cmd = "ifconfig %s 0.0.0.0" % clientif
+        ex.executeLocalBlock(cmd, flog)
+
+        cmd = "ifconfig %s 172.16.%d.10/24" % (brname, i)
+        ex.executeLocalBlock(cmd, flog)
+
+def remove_bridges(rc):
+    # remove bridges
+    for i in range(rc.l2_vm_num):
+        brname = "test_br%d" % i
+        # bring a bridge down
+        cmd = "ifconfig %s down" % brname
+        ex.executeLocalBlock(cmd, sys.stdout)
+        # delete a bridge
+        cmd = "brctl delbr %s" % brname
+        ex.executeLocalBlock(cmd, sys.stdout)
+
+
+def cleanup(rc, l1_vm, client_vm_group):
+    # shut down L1 VM
+    dbg.print_info("Shutting down L1 VM")
+    l1_vm.Poweroff()
+
+    # shut down client VMs
+    dbg.print_info("Shutting down Client VMs")
+    client_vm_group.Poweroff()
+
+    dbg.print_info("Removing bridges")
+    remove_bridges(rc)
+
+def genTrace(rc):
+    flog_path = os.path.join(cfg.LOG_DIR, LOG_NAME)
+    flog = open(flog_path, 'w')
+
+    l1_wait_sec = 60
+    l2_wait_sec = 240
+    client_wait_sec = 30
+    
+    if not rc.runtest:
+        l1_vm = vm.L1VM()
+        l1_vm.cores= rc.l1_vm_cpus
+        l1_vm.memory = rc.l1_vm_mem
+        l1_vm.tap_num = rc.l1_vm_tap
+        l1_vm.Launch()
+        l1_vm.WaitForBoot()
+
+        # Start L2 VM(s)
+        cmd = "export HYPERSIO_HOME=/home/%s/hypersio;export PATH=$PATH:$HYPERSIO_HOME/src/scripts;" % cfg.VM_USERNAME
+        cmd += "start_all_l2 %d" % rc.l2_vm_num
+        dbg.print_info("Starting %d L2 VM(s) on L1 VM" % rc.l2_vm_num)
+        l1_vm.ExecuteBlockCheck(cmd)
+
+        # Start Client VM(s)
+        dbg.print_info("Creating VM group of %s Client VM(s)" % rc.l2_vm_num)
+        client_vm_group = vm.VMGroup("client")
+        client_vm_group.AddVMByID(range(rc.l2_vm_num))
+        client_vm_group.Launch()
+        
+        # Create bridges
+        dbg.print_info("Creating bridges on a host for server-client connections")
+        createBridges(rc, flog)
+        
+        dbg.print_info("Waiting %d sec for L2 VM to start" % l2_wait_sec)
+        # Note: can be ping loop instead of fixed sleep sleep
+        time.sleep(l2_wait_sec)
+
+    # Run Test
+    if rc.dryrun:
+        dry_run_sleep = 10000
+        dbg.print_info("Sleeping for %d" % dry_run_sleep)
+        time.sleep(dry_run_sleep)
+    else:
+        runTest(rc)
+
+    if not rc.runtest:
+        cleanup(rc, l1_vm, client_vm_group)
+        dbg.print_info("Waiting %d sec for L1 VM and clients to shutdown" % l1_wait_sec)
+        time.sleep(l1_wait_sec)
+
+    flog.close()
+
+def main():
+    parser = ArgumentParser()
+    requred_args = parser.add_argument_group("Required named arguments")
+    requred_args.add_argument("--test", dest="test", type=str, default=None, required=True, choices=["iperf3"], help="Name of a test.")
+    requred_args.add_argument("--l2vm", dest="l2vm", type=int, default=None, required=True, help="Number of L2 VMs.")
+    parser.add_argument("--runs", dest="runs", type=int, default=1, help="Number of runs of the configuration. Log from every run will has a unique name.")
+    parser.add_argument("--runtest", dest="runtest", action="store_true", help="Only run test, without launching any VMs.")
+    parser.add_argument("--dryrun", dest="dryrun", action="store_true", help="Dry run - just sleep instead executing a test.")
+    parser.add_argument("--create_bridges", dest="create_bridges", action="store_true", help="Only create bridge(s) and connect tap interfaces to it.")
+    parser.add_argument("--remove_bridges", dest="remove_bridges", action="store_true", help="Only remove bridge(s) and connect tap interfaces to it.")
+    parser.add_argument("--cleanup", dest="cleanup", action="store_true", help="Clean up test environment. Poweroffs L1 VM and Client VMs, removes bridges and tap interfaces.")
+    parser.add_argument("--iperf3time", dest="iperf3time", type=int, default=10, help="Duration of iperf3 test in seconds")
+    args = parser.parse_args()
+
+    log_prefix = "hypersio_%s" % args.test
+    ms_conn_per_host_l = [8]
+    l2_vm_num_l = [1]
+
+    rc_l = list()
+    # build all RC 
+    for ms_conn_per_host in ms_conn_per_host_l:
+        for rid in range(args.runs):
+            rc = RunTimeConfig()
+            rc.iperf_bw = 0
+            rc.iperf_bw_l = [0]
+            rc.iperf_dur = args.iperf3time
+            rc.l1_vm_cpus = l1cfg.L1_VM_CPUS_DEFAULT
+            rc.l1_vm_mem = l1cfg.L1_VM_MEMGB_DEFAULT
+            rc.l1_vm_tap = l1cfg.L1_VM_TAPIF_DEFAULT
+            rc.l2_vm_num = args.l2vm
+            rc.run_id = rid
+            rc.dryrun = args.dryrun
+            rc.runtest = args.runtest
+            rc.test_name = args.test
+            rc.ms_conn_per_host = ms_conn_per_host
+            rc.websearch_steady_s = None
+            rc_l.append(rc)
+
+    total_run_num = len(rc_l)
+    for rcnt in range(total_run_num):
+        rc = rc_l[rcnt]
+
+        if args.create_bridges:
+            createBridges(rc, sys.stdout)
+        elif args.remove_bridges:
+            remove_bridges(rc)
+        elif args.cleanup:
+            l1_vm = vm.L1VM()
+            client_vm_group = vm.VMGroup("client")
+            client_vm_group.AddVMByID(range(rc.l2_vm_num))
+            cleanup(rc, l1_vm, client_vm_group)
+        else:
+            dbg.print_info("*"*70)
+            dbg.print_info("Generating Trace # %d out of %d" % (rcnt+1, total_run_num))
+            dbg.print_info("*"*70)
+            genTrace(rc)
+            qemu_log_base = "%s_vm_%d_log" % (log_prefix, rc.l2_vm_num)
+            saved_log_name = "%s_%d.txt" % (qemu_log_base, rc.run_id)
+            saved_log_path = os.path.join(cfg.LOG_DIR, saved_log_name)
+            dbg.print_info("Copying trace %s to %s" % (cfg.L1_TRACE_PATH, saved_log_path))
+            dbg.print_info("SIOPERF log group prefix: %s" % qemu_log_base)
+            shutil.copy2(cfg.L1_TRACE_PATH, saved_log_path)
+            common.validateTrace(saved_log_path)
+
+    dbg.print_info("Done")
+
+
+if __name__ == "__main__":
+    main()

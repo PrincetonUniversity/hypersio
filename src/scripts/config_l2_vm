@@ -1,0 +1,43 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" == "" ]; then
+    echo "L2 VM ID is required!"
+else
+    vmid=$1
+
+    vmname="${L2_VMPREFIX}_${vmid}"
+    pnum=$[$L2_FWDPORT_BASE+$vmid]
+    vmip="172.16.$vmid.20"
+
+    echo "Configuring $vmname"
+    ssh -o StrictHostKeyChecking=no root@localhost -p $pnum << ENDSSH
+        # 1 - Change host name
+        echo "$vmname" > /etc/hostname
+        echo "127.0.0.1     localhost" > /etc/hosts
+        echo "127.0.1.1     $vmname" >> /etc/hosts
+        # 2 - Configure a passthrough interface with a static IP
+        # Note: new netplan network manager on Ubuntu 18.04
+        echo "network:"         > /etc/netplan/01-netcfg.yaml
+        echo "  version: 2"     >> /etc/netplan/01-netcfg.yaml
+        echo "  ethernets:"     >> /etc/netplan/01-netcfg.yaml
+        echo "    ens4:"        >> /etc/netplan/01-netcfg.yaml
+        echo "      addresses: [$vmip/24]" >> /etc/netplan/01-netcfg.yaml
+        netplan apply
+        # 3 - Enable iperf3 server on startup
+        echo "[Unit]"                        > /etc/systemd/system/iperf3.service
+        echo "Description=Iperf3 Server"    >> /etc/systemd/system/iperf3.service
+        echo ""                             >> /etc/systemd/system/iperf3.service
+        echo "[Service]"                    >> /etc/systemd/system/iperf3.service
+        echo "ExecStart=/usr/bin/iperf3 -p 52001 -B $vmip -s" >> /etc/systemd/system/iperf3.service
+        echo "RemainAfterExit=yes"          >> /etc/systemd/system/iperf3.service
+        echo ""                             >> /etc/systemd/system/iperf3.service
+        echo "[Install]"                    >> /etc/systemd/system/iperf3.service
+        echo "WantedBy=multi-user.target"   >> /etc/systemd/system/iperf3.service
+        chmod u+x /etc/systemd/system/iperf3.service
+        systemctl start iperf3
+        systemctl enable iperf3
+        poweroff
+ENDSSH
+fi

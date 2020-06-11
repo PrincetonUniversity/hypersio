@@ -1,0 +1,5 @@
+vtd_iotlb_cc_update
+vtd_iotlb_cc_hit
+vtd_slpte_fetch
+vtd_iotlb_page_update
+vtd_iotlb_page_hit

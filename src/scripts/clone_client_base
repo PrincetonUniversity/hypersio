@@ -1,0 +1,13 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" == "" ]; then
+    echo "Client ID if required!"
+else
+    clientname="${CLIENT_VMPREFIX}_$1"
+    baseimg="${VM_STORAGE_PATH}/${CLIENT_BASEIMG}"
+    clientimg="${VM_STORAGE_PATH}/${clientname}.img"
+    echo "Copying client's base image $baseimg to $clientimg"
+    cp $baseimg $clientimg
+fi

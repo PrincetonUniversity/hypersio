@@ -1,0 +1,9 @@
+build/*
+!build/*.gitkeep
+!build/*.keep
+
+src/lib/*pyc
+src/tools/*pyc
+src/scripts/*pyc
+src/sioperf/cache.cfg
+

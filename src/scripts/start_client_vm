@@ -1,0 +1,23 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" == "" ]; then
+    echo "Client ID is required!"
+else
+    if [ "$1" == "base" ]; then
+        clientimg=$CLIENT_BASEIMG
+        netid="netbase"
+        fwdport=$CLIENT_FWDPORT_BASE
+    else
+        clientid=$1
+        clientimg="${CLIENT_VMPREFIX}_$1.img"
+        netid="net$clientid"
+        fwdport=$(($CLIENT_FWDPORT_BASE+$clientid))
+    fi
+
+    # to avoid both client and server having the same mac
+    mac="52:54:00:12:34:99"
+    echo "Starting client image: $clientimg"
+    sudo ${QEMU_PATH}/x86_64-softmmu/qemu-system-x86_64 -drive file=${VM_STORAGE_PATH}/$clientimg,format=raw --enable-kvm -cpu host -device e1000,netdev=$netid,mac=$mac -netdev tap,id=$netid -net user,hostfwd=tcp::$fwdport-:22 -net nic -m 32G --nographic 2> /dev/null &
+fi

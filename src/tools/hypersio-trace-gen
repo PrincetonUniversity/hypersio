@@ -1,0 +1,121 @@
+#!/usr/bin/env python2
+
+from libconfig import *
+from argparse import ArgumentParser
+import math, shlex, os, sys
+import subprocess as subp
+import sioperf_config as siocfg
+import dbglib as dbg
+import sioperflib as sioperf
+import config as cfg
+
+class TraceBuilder(object):
+    def __init__(self, tnum):
+        self.tnum = tnum
+
+def calcLnumDPL(tnum, tname):
+    (opt_lnum, opt_dpl) = (None, None)
+    min_tnt_diff = None
+    dev_per_log_l = range(siocfg.TNAME_DEVPERLOG_D[tname],0,-1)
+    for dpl in dev_per_log_l:
+        lnum = tnum / dpl
+        tnt_diff = tnum - lnum * dpl
+        if (tnt_diff < min_tnt_diff) or (min_tnt_diff == None):
+            opt_lnum = lnum
+            opt_dpl = dpl
+            min_tnt_diff = tnt_diff
+
+    if dpl >= tnum:
+        opt_lnum = 1
+        opt_dpl = tnum
+
+    max_log_num = siocfg.TNAME_MAXLOG_D[tname]
+    if opt_lnum > max_log_num:
+        dbg.print_error("Can not set number of logs!")
+        (opt_lnum, opt_dpl) = (None, None)
+    else:
+        dbg.print_info("%s: tenats: %d, Devices per log: %d, Log num: %d" % (tname, tnum, opt_dpl, opt_lnum))
+    
+    return (opt_lnum, opt_dpl)
+
+def buildTrace(log_group_prefix, tnum, tname, tnt_order, consectransl):
+    if log_group_prefix == None:
+        qemu_log_base = siocfg.TNAME_QLOGBASE_D[tname]
+    else:
+        qemu_log_base = log_group_prefix
+    
+    vm_num = sioperf.getVMNumFromLogBase(qemu_log_base)
+    if vm_num != None:
+        dev_per_log_max = vm_num
+    else:
+        dbg.print_warning("Can't get number of VM in the log from its base: %s" % qemu_log_base)
+        dev_per_log_max = siocfg.TNAME_DEVPERLOG_D[tname]
+    dbg.print_info("Setting maximum number of devices per log to %d" % dev_per_log_max)
+
+    dbg.print_info("Building a trace for %d tenant(s) running '%s'" % (tnum, tname))
+    log_name = "%s_trace_build_tnt_%d_%s%d.log" % (tname, tnum, tnt_order, consectransl)
+    log_path = os.path.join(cfg.TRACEGEN_LOG_DIR, log_name)
+    if not os.path.exists(cfg.TRACEGEN_LOG_DIR):
+        dbg.print_info("Directory %s doesn't exist. Creating..." % cfg.TRACEGEN_LOG_DIR)
+        os.mkdir(cfg.TRACEGEN_LOG_DIR)
+    flog = open(log_path, 'w')
+    dbg.print_info("Writing log to: %s" % log_path)
+
+    tool_path = os.path.join(cfg.SIOPERF_DIR, cfg.SIOPERF_EXEC_NAME)
+    if not os.path.exists(tool_path):
+        dbg.print_error("SIOPERF hasn't been compiled!")
+        sys.exit(1)
+    cmd = "%s --lbase %s --tenantnum %d --maxdevperlog %d --ltype txt --build --order %s --consec %d --tname %s" % (tool_path, qemu_log_base, tnum, dev_per_log_max, tnt_order, consectransl, tname)
+    flog.write(cmd + "\n")
+    flog.flush()
+    pid = subp.Popen(shlex.split(cmd), stdout=flog, stderr=flog)
+
+    return (pid, flog)
+
+def buildAllTracesParallel(workload_cfg):
+    pid_log_l = list()
+    for tnum in workload_cfg.tenant_num_l:
+        for tname in workload_cfg.test_name_l:
+            tnt_order = workload_cfg.tenant_order
+            consectransl = workload_cfg.consec_transl
+            (pid, flog) = buildTrace(workload_cfg.log_group_prefix, tnum, tname, tnt_order, consectransl)
+            if (pid, flog) == (None, None):
+                dbg.print_error("Can't build trace for %d tenants" % tnum)
+                continue
+            pid_log_l.append((pid, flog))
+    
+    # Wait for all processes to finish
+    for (p, _) in pid_log_l:
+        p.wait()
+        if p.returncode != 0:
+            dbg.print_error("Process failed!")
+            dbg.print_error("Check a log in: %s" % cfg.TRACEGEN_LOG_DIR)
+
+    for (_, l) in pid_log_l:
+        l.close()
+
+def buildAllTracesSerial():
+    for tnum in siocfg.IMPORT_TNT_NUM_L:
+        (proc, flog) = buildTrace(tnum)
+        proc.wait()
+        flog.close()
+        if proc.returncode != 0:
+            dbg.print_error("Building trace for %d tenants failed!" % tnum)
+            dbg.print_error("Check: %s" % cfg.TRACEGEN_LOG_DIR)
+
+
+def main():
+    parser = ArgumentParser()
+    parser = sioperf.addWorkloadOptionsToParser(parser)
+    parser = sioperf.addHWOptionsToParser(parser)
+    required_args = parser.add_argument_group("Required named log arguments")
+    required_args.add_argument("--loggroupprefix", dest="loggroupprefix", type=str, default=None, help="Log group prefix for SIOPERF. Log files must be in the form <loggroupprefix>_<X>.txt, where X is an integer starting from 0.")
+    args = parser.parse_args()
+
+    workload_cfg = sioperf.constructWorkloadConfigFromArgs(args)
+    workload_cfg.setLogGroupPrefix(args.loggroupprefix)
+
+    buildAllTracesParallel(workload_cfg)
+
+if __name__ == "__main__":
+    main()

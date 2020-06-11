@@ -1,0 +1,18 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" == "" ]; then
+    echo "L2 VM ID is required!"
+else
+    vmid=$1
+    pnum=$[$L2_FWDPORT_BASE+$vmid]
+
+    clone_l2_base $vmid
+    start_vm_l2 $vmid > /dev/null 2>&1 &
+    sshwait $pnum
+    waitsec=60
+    echo "Waiting $waitsec sec for a client to start..."
+    sleep $waitsec
+    config_l2_vm $vmid
+fi

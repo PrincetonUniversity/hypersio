@@ -1,0 +1,5 @@
+obj/*.o
+build/*
+hypersio-perf
+
+tools/*.pyc

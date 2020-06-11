@@ -1,0 +1,24 @@
+#!/bin/bash
+
+vmid=$1
+
+if [ -z $vmid ]; then
+    echo "ERROR: Provide L2 VM to connect to"
+else
+    testlen=$2
+    if [ -z $testlen ]; then
+        testlen=30
+    fi
+    connbw=$3
+    if [ -z $connbw ]; then
+        connbw=0    # unlimited
+    fi
+    mss=$4
+    if [ -z $mss ]; then
+        mss=9216    # maximum possible in iperf3
+    fi
+    hostip="172.16.$vmid.10"
+    vmip="172.16.$vmid.20"
+    echo "Running iperf3 for $testlen sec, max ${connbw} Mbit/s, MSS ${mss} B"
+    iperf3 -Z -c $vmip -B $hostip -p 52001 -t $testlen -b ${connbw}M -M ${mss}
+fi

@@ -1,0 +1,20 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" == "" ]; then
+    echo "Client ID is required!"
+else
+    vmid=$1
+    pnum=$[$CLIENT_FWDPORT_BASE+$vmid]
+
+    # Asking for sudo password in order to use cached credits later
+    sudo su -c ''
+    clone_client_base $vmid
+    start_client_vm $vmid > /dev/null 2>&1 &
+    sshwait $pnum
+    waitsec=60
+    echo "Waiting $waitsec sec for a client to start..."
+    sleep $waitsec
+    config_client_vm $vmid
+fi

@@ -1,0 +1,184 @@
+#!/usr/bin/env python2.7
+
+from libconfig import *
+from argparse import ArgumentParser
+import sys, os
+import config as cfg
+import execlib as ex
+import dbglib as dbg
+import common as common
+
+class VMRC:
+    def __init__(self):
+        pass
+
+def copySSHID(vmtype, username, assudo=False):
+    portnum = cfg.VMTYPE_FWDPORTBASE_D[vmtype]
+    sudo_opt = "sudo" if assudo else ""
+    cmd = "%s ssh-copy-id %s@localhost -p %d" % (sudo_opt, username, portnum)
+    dbg.print_info(cmd)
+    ex.executeLocalBlock(cmd, sys.stdout)
+
+def copySSHKeyAll(vmtype):
+    copySSHID(vmtype, cfg.VM_USERNAME)
+    copySSHID(vmtype, "root")
+
+def loginToVM(vmrc):
+    portnum = common.portForVM(vmrc.vmtype, vmrc.vmid)
+    cmd = "ssh -X %s@localhost -p %d" % (vmrc.username, portnum)
+    dbg.print_info(cmd)
+    ex.executeLocalBlock(cmd, sys.stdout)
+
+def poweroffVM(vmrc):
+    portnum = common.portForVM(vmrc.vmtype, vmrc.vmid)
+    p = ex.executeRemotely("poweroff", sys.stdout, "root", "localhost", "-p %d" % portnum)
+    dbg.print_info("Launched a poweroff command")
+    p.wait()
+
+def createBaseImage(vmtype):
+    img_path = os.path.join(cfg.VMSTORAGE_DIR, cfg.VMTYPE_BASEIMG_D[vmtype])
+    if os.path.exists(img_path):
+        dbg.print_warning("Image already exitsts: %s" % img_path)
+        dbg.print_warning("Double check the command and remove a previous image if necessary")
+        return
+
+    if os.path.exists(cfg.LOCALQEMU_DIR):
+        qemu_dir = os.path.join(cfg.LOCALQEMU_DIR, "..")
+    else:
+        qemu_dir = cfg.DEFAULTQEMU_DIR
+    
+    cmd = "%s/qemu-img create -f raw %s %sG" % (qemu_dir, img_path, cfg.VMTYPE_IMGSIZEGB_D[vmtype])
+    dbg.print_info(cmd)
+    ex.executeLocalBlock(cmd, sys.stdout)
+
+
+def checkISO():
+    iso_path = os.path.join(cfg.BUILD_DIR, cfg.DEFAULT_ISO)
+    if os.path.exists(iso_path):
+        return
+
+    dbg.print_info("Downloading ISO: %s" % cfg.DEFAULT_ISO)
+    cmd = "wget https://releases.ubuntu.com/18.04/%s -P %s" % (cfg.DEFAULT_ISO, cfg.BUILD_DIR)
+    dbg.print_info(cmd)
+    ex.executeLocalBlock(cmd, sys.stdout)
+
+
+def launchVM(vmrc):
+    img_name = "%s_%s.img" % (cfg.VMTYPE_PREFIX_D[vmrc.vmtype], vmrc.vmid)
+    if vmrc.oscd:
+        checkISO()
+        opt_oscd = " -cdrom %s" % os.path.join(cfg.ISO_DIR, cfg.DEFAULT_ISO)
+    else:
+        opt_oscd = ""
+
+    qemu_dir = common.getQEMUFolder()
+    default_cmd = "sudo %s/%s -drive file=%s/%s,format=raw --enable-kvm -cpu host " % (qemu_dir, cfg.QEMU_SYSTEM, cfg.VMSTORAGE_DIR, img_name)
+    opt_graphics = "" if vmrc.graphic else " --nographic"
+    opt_cores = " -smp %s,sockets=1,cores=%s,threads=1" % (cfg.VMTYPE_CORES_D[vmrc.vmtype], cfg.VMTYPE_CORES_D[vmrc.vmtype])
+    opt_memory = " -m %sG" % cfg.VMTYPE_MEMORY_D[vmrc.vmtype]
+    
+    if vmrc.sharedfolder:
+        opt_netuser = ""
+    elif vmrc.vmtype == "l1":
+        opt_netuser = " -device e1000,netdev=netcfg,addr=\"%s\",mac=\"52:54:00:12:0c:f6\" -netdev user,hostfwd=tcp::%d-:22,id=netcfg" % (cfg.L1_CFGNIC_PCIE_ADDR, cfg.VMTYPE_FWDPORTBASE_D[vmrc.vmtype])
+    elif vmrc.vmtype == "client":
+        opt_netuser = " -device e1000,netdev=nettap,mac=\"52:54:00:12:34:99\" -netdev tap,id=nettap -net user,hostfwd=tcp::%d-:22 -net nic" % cfg.VMTYPE_FWDPORTBASE_D[vmrc.vmtype]
+    else:
+        opt_netuser = " -net user,hostfwd=tcp::%d-:22 -net nic" % cfg.VMTYPE_FWDPORTBASE_D[vmrc.vmtype]
+
+    if vmrc.vmtype == "l1" and not vmrc.oscd and not vmrc.sharedfolder:
+        opt_tapdev = " -device e1000,netdev=net0,addr=2.0 -device e1000,netdev=net1,addr=3.0 -device e1000,netdev=net2,addr=4.0 -device e1000,netdev=net3,addr=5.0 -device e1000,netdev=net4,addr=6.0 -device e1000,netdev=net5,addr=7.0 -device e1000,netdev=net6,addr=8.0 -device e1000,netdev=net7,addr=9.0 -device e1000,netdev=net8,addr=a.0 -device e1000,netdev=net9,addr=b.0 -device e1000,netdev=net10,addr=c.0 -device e1000,netdev=net11,addr=d.0 -device e1000,netdev=net12,addr=e.0 -device e1000,netdev=net13,addr=f.0 -device e1000,netdev=net14,addr=10.0 -device e1000,netdev=net15,addr=11.0 -device e1000,netdev=net16,addr=12.0 -device e1000,netdev=net17,addr=13.0 -device e1000,netdev=net18,addr=14.0 -device e1000,netdev=net19,addr=15.0 -device e1000,netdev=net20,addr=16.0 -device e1000,netdev=net21,addr=17.0 -device e1000,netdev=net22,addr=18.0 -device e1000,netdev=net23,addr=19.0 -netdev tap,id=net0 -netdev tap,id=net1 -netdev tap,id=net2 -netdev tap,id=net3 -netdev tap,id=net4 -netdev tap,id=net5 -netdev tap,id=net6 -netdev tap,id=net7 -netdev tap,id=net8 -netdev tap,id=net9 -netdev tap,id=net10 -netdev tap,id=net11 -netdev tap,id=net12 -netdev tap,id=net13 -netdev tap,id=net14 -netdev tap,id=net15 -netdev tap,id=net16 -netdev tap,id=net17 -netdev tap,id=net18 -netdev tap,id=net19 -netdev tap,id=net20 -netdev tap,id=net21 -netdev tap,id=net22 -netdev tap,id=net23"
+        opt_iommu = " -M q35 -device intel-iommu"
+    else:
+        opt_tapdev = ""
+        opt_iommu = ""
+
+    if vmrc.sharedfolder:
+        opt_sharedfolder = " -net nic -net user,smb=%s" % cfg.VMSTORAGE_DIR
+    else:
+        opt_sharedfolder = ""
+
+    cmd = default_cmd + opt_cores + opt_memory + opt_iommu + opt_tapdev + opt_netuser + opt_graphics + opt_oscd + opt_sharedfolder
+    dbg.print_info(cmd)
+    ex.executeLocalBlock(cmd, sys.stdout)
+
+def prepareVM(vmtype, vmid_l):
+    if vmtype == "client":
+        script_name = "prepare_client_vm"
+    elif vmtype == "l2":
+        script_name = "prepare_l2_vm"
+    else:
+        dbg.print_eror("No script to prepare VM type: %s" % vmtype)
+    for vmid in vmid_l:
+        cmd = "%s/scripts/%s %d" % (cfg.SRC_DIR, script_name, vmid)
+        dbg.print_info(cmd)
+        ex.executeLocalBlock(cmd, sys.stdout)
+
+def main():
+    valid_action_l = [
+        "launch",
+        "login",
+        "copysshid",
+        "poweroff",
+        "copysshidall",
+        "createbaseimage",
+        "installos",
+        "preparevm",
+        "launchsharedfolder",
+    ]
+    parser = ArgumentParser()
+    requred_args = parser.add_argument_group("Required named arguments")
+    requred_args.add_argument("--vmtype", dest="vmtype", required=True, choices=cfg.VMTYPE_PREFIX_D.keys(), help="VM type - L1 or L2")
+    requred_args.add_argument("--action", dest="action", required=True, choices=valid_action_l, help="Type of action to be performed")
+    parser.add_argument("--vmid", dest="vmid", default="base", help="VM ID - nonnegative integer")
+    parser.add_argument("--username", dest="username", default=None, help="Optional user name for login")
+    parser.add_argument("--graphic", dest="graphic", action="store_true", default=False, help="Use graphical interface")
+    args = parser.parse_args() 
+
+    # Set arguments based on command line options
+    if args.username:
+        username = args.username
+    else:
+        username = cfg.VM_USERNAME
+    
+    vmrc = VMRC()
+    vmrc.vmtype = args.vmtype
+    vmrc.vmid   = args.vmid
+    vmrc.username = username
+    vmrc.sharedfolder = False
+    vmrc.oscd = False
+    vmrc.graphic = False
+
+    # Perform an action
+    if args.action == "poweroff":
+        poweroffVM(vmrc)
+    elif args.action == "copysshidall":
+        copySSHKeyAll(args.vmtype)
+    elif args.action == "copysshid":
+        copySSHID(args.vmtype, username)
+    elif args.action == "login":
+        loginToVM(vmrc)
+    elif args.action == "createbaseimage":
+        createBaseImage(args.vmtype)
+    elif args.action == "installos":
+        vmrc.graphic = True
+        vmrc.oscd = True
+        launchVM(vmrc)
+    elif args.action == "launch":
+        vmrc.graphic = args.graphic
+        launchVM(vmrc)
+    elif args.action == "preparevm":
+        if args.vmid == "base":
+            dbg.print_error("--vmid option with VM ID is required when --preparevm option is used")
+            return
+        vmid_l = common.expandCommaSeparatedRanges(args.vmid)
+        prepareVM(args.vmtype, vmid_l)
+    elif args.action == "launchsharedfolder":
+        vmrc.sharedfolder = True
+        launchVM(vmrc)
+    else:
+        dbg.print_error("Unknown action: %s" % args.action)
+        
+
+if __name__ == "__main__":
+    main()

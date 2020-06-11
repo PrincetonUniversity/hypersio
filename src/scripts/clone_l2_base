@@ -1,0 +1,13 @@
+#!/bin/bash
+
+source vmconfig
+
+if [ "$1" == "" ]; then
+    echo "Required ID for a new L2 VM"
+else
+    # Make a separate image for VM
+    vmname="${L2_VMPREFIX}_$1"
+    vmimg="$vmname.img"
+    echo "Copying base image $L2_BASEIMG to $vmimg"
+    cp $VM_STORAGE_PATH/$L2_BASEIMG $VM_STORAGE_PATH/$vmimg
+fi

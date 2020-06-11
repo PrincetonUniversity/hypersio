@@ -1,0 +1,60 @@
+diff -ruN hw/i386/intel_iommu.c hw/i386/intel_iommu.c
+--- hw/i386/intel_iommu.c	2020-05-26 17:46:21.615431106 -0400
++++ hw/i386/intel_iommu.c	2018-11-01 11:50:12.520355334 -0400
+@@ -269,7 +269,7 @@
+     uint64_t *key = g_malloc(sizeof(*key));
+     uint64_t gfn = vtd_get_iotlb_gfn(addr, level);
+ 
+-    trace_vtd_iotlb_page_update(source_id, addr, slpte, domain_id);
++    trace_vtd_iotlb_page_update(source_id, addr, slpte, level, domain_id);
+     if (g_hash_table_size(s->iotlb) >= VTD_IOTLB_MAX_SIZE) {
+         trace_vtd_iotlb_reset("iotlb exceeds size limit");
+         vtd_reset_iotlb_locked(s);
+@@ -715,6 +715,7 @@
+     while (true) {
+         offset = vtd_iova_level_offset(iova, level);
+         slpte = vtd_get_slpte(addr, offset);
++        trace_vtd_slpte_fetch(ce->hi, ce->lo, iova, level, addr, slpte);
+ 
+         if (slpte == (uint64_t)-1) {
+             trace_vtd_err_dmar_slpte_read_error(iova, level);
+@@ -1277,7 +1278,7 @@
+     /* Try to fetch slpte form IOTLB */
+     iotlb_entry = vtd_lookup_iotlb(s, source_id, addr);
+     if (iotlb_entry) {
+-        trace_vtd_iotlb_page_hit(source_id, addr, iotlb_entry->slpte,
++        trace_vtd_iotlb_page_hit(source_id, addr, iotlb_entry->mask, iotlb_entry->slpte,
+                                  iotlb_entry->domain_id);
+         slpte = iotlb_entry->slpte;
+         access_flags = iotlb_entry->access_flags;
+@@ -2509,6 +2510,7 @@
+     return iotlb;
+ }
+ 
++
+ static void vtd_iommu_notify_flag_changed(IOMMUMemoryRegion *iommu,
+                                           IOMMUNotifierFlag old,
+                                           IOMMUNotifierFlag new)
+@@ -3310,6 +3312,7 @@
+ {
+     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
+ 
++    // imrc->translate_len = vtd_iommu_translate_len;
+     imrc->translate = vtd_iommu_translate;
+     imrc->notify_flag_changed = vtd_iommu_notify_flag_changed;
+     imrc->replay = vtd_iommu_replay;
+diff -ruN hw/i386/trace-events hw/i386/trace-events
+--- hw/i386/trace-events	2020-05-26 17:46:21.615431106 -0400
++++ hw/i386/trace-events	2018-11-01 11:45:44.900435479 -0400
+@@ -30,8 +30,9 @@
+ vtd_re_invalid(uint64_t hi, uint64_t lo) "invalid root entry hi 0x%"PRIx64" lo 0x%"PRIx64
+ vtd_ce_not_present(uint8_t bus, uint8_t devfn) "Context entry bus %"PRIu8" devfn %"PRIu8" not present"
+ vtd_ce_invalid(uint64_t hi, uint64_t lo) "invalid context entry hi 0x%"PRIx64" lo 0x%"PRIx64
+-vtd_iotlb_page_hit(uint16_t sid, uint64_t addr, uint64_t slpte, uint16_t domain) "IOTLB page hit sid 0x%"PRIx16" iova 0x%"PRIx64" slpte 0x%"PRIx64" domain 0x%"PRIx16
+-vtd_iotlb_page_update(uint16_t sid, uint64_t addr, uint64_t slpte, uint16_t domain) "IOTLB page update sid 0x%"PRIx16" iova 0x%"PRIx64" slpte 0x%"PRIx64" domain 0x%"PRIx16
++vtd_iotlb_page_hit(uint16_t sid, uint64_t addr, uint64_t mask, uint64_t slpte, uint16_t domain) "IOTLB page hit sid 0x%"PRIx16" iova 0x%"PRIx64" pmask 0x%"PRIx64" slpte 0x%"PRIx64" domain 0x%"PRIx16
++vtd_iotlb_page_update(uint16_t sid, uint64_t addr, uint64_t slpte, uint32_t level, uint16_t domain) "IOTLB page update sid 0x%"PRIx16" iova 0x%"PRIx64" slpte 0x%"PRIx64" level 0x%"PRIx32" domain 0x%"PRIx16
++vtd_slpte_fetch(uint64_t high, uint64_t low, uint64_t iova, uint32_t level, uint64_t addr, uint64_t slpte) "SLPTE fetch: high 0x%"PRIx64" low 0x%"PRIx64" iova 0x%"PRIx64" level 0x%"PRIx32" addr 0x%"PRIx64" slpte 0x%"PRIx64
+ vtd_iotlb_cc_hit(uint8_t bus, uint8_t devfn, uint64_t high, uint64_t low, uint32_t gen) "IOTLB context hit bus 0x%"PRIx8" devfn 0x%"PRIx8" high 0x%"PRIx64" low 0x%"PRIx64" gen %"PRIu32
+ vtd_iotlb_cc_update(uint8_t bus, uint8_t devfn, uint64_t high, uint64_t low, uint32_t gen1, uint32_t gen2) "IOTLB context update bus 0x%"PRIx8" devfn 0x%"PRIx8" high 0x%"PRIx64" low 0x%"PRIx64" gen %"PRIu32" -> gen %"PRIu32
+ vtd_iotlb_reset(const char *reason) "IOTLB reset (reason: %s)"

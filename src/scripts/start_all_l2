@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [ -z "$1" ]; then
+	echo "ERROR: provide number of VMs to start"
+else
+	vmmax=$(($1-1))
+	for vmid in $(seq 0 $vmmax); do
+		echo "Starting L2 VM # $vmid"
+		start_vm_l2 $vmid > /dev/null 2>&1 &
+		sleep 30
+	done
+fi
